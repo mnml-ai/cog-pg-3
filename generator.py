@@ -31,6 +31,10 @@ class Generator:
         self.preprocessors = {}
         self.detectors = {}
 
+        self.model_cache = {}
+        self.sd_path = sd_path
+
+        
         if vae_path:
             vae = AutoencoderKL.from_pretrained(vae_path)
 
@@ -80,6 +84,20 @@ class Generator:
         self.pipe.load_textual_inversion("dsgnrai/negative-embeddings", weight_name="verybadimagenegative_v1.3.pt", token="verybadimagenegative_v1")
 
         self.pipe.to("cuda", torch.float16)
+
+    def load_model(self, model_path):
+        if model_path in self.model_cache:
+            self.pipe = self.model_cache[model_path]
+        else:
+            if model_path.endswith('.safetensors'):
+                self.pipe = StableDiffusionPipeline.from_single_file(model_path, torch_dtype=torch.float16)
+            else:
+                self.pipe = StableDiffusionPipeline.from_pretrained(
+                    model_path, torch_dtype=torch.float16,
+                    vae=self.vae if self.vae_path else None
+                )
+            self.pipe.to("cuda", torch.float16)
+            self.model_cache[model_path] = self.pipe
 
     def convert_image(self, image):
         #converts black pixels into transparent and white pixels to black
