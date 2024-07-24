@@ -22,7 +22,7 @@ from torch import nn
 import numpy as np
 
 class Generator:
-    def __init__(self, sd_path= "stablediffusionapi/majicmix-v7", vae_path= None, load_ip_adapter=False, load_controlnets={}, use_compel= False, ip_image_encoder= "weights/image_encoder", ip_weight="weights/ip-adapter_sd15.bin" ):
+    def __init__(self, sd_path= "runwayml/stable-diffusion-v1-5", vae_path= None, load_ip_adapter=False, load_controlnets={}, use_compel= False, ip_image_encoder= "weights/image_encoder", ip_weight="weights/ip-adapter_sd15.bin" ):
 
         self.use_compel = use_compel
         self.load_ip_adapter = load_ip_adapter
