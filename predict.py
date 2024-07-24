@@ -128,23 +128,15 @@ class Predictor(BasePredictor):
     def setup(self):
         """Load the model into memory to make running multiple predictions efficient"""
         self.gen = Generator(
-            sd_path="runwayml/stable-diffusion-v1-5",  # or another valid model path
-            load_controlnets={"lineart", "mlsd", "canny", "depth", "inpainting"},
+            sd_path= "SG161222/Realistic_Vision_V6.0_B1_noVAE",
+            vae_path= "stabilityai/sd-vae-ft-mse", use_compel=True,
+            load_controlnets={"lineart","mlsd", "canny", "depth", "inpainting"},
             load_ip_adapter=True
         )
 
     @torch.inference_mode()
     def predict(
         self,
-        model_choice: str = Input(
-            description="Choose a Stable Diffusion model",
-            choices=["runwayml/stable-diffusion-v1-5", "SG161222/Realistic_Vision_V5.1_noVAE", "custom"],
-            default="runwayml/stable-diffusion-v1-5"
-        ),
-        custom_model_path: str = Input(
-            description="Path to custom .safetensors model file (use if 'custom' is selected above)",
-            default=None
-        ),
         prompt: str = Input(description="Prompt - using compel, use +++ to increase words weight:: doc: https://github.com/damian0815/compel/tree/main/doc || https://invoke-ai.github.io/InvokeAI/features/PROMPTS/#attention-weighting",),
         negative_prompt: str = Input(
             description="Negative prompt - using compel, use +++ to increase words weight//// negative-embeddings available ///// FastNegativeV2 , boring_e621_v4 , verybadimagenegative_v1 || to use them, write their keyword in negative prompt",
@@ -280,13 +272,6 @@ class Predictor(BasePredictor):
         ),
 
     ) -> List[Path]:
-        
-         # Load the selected model
-        if model_choice == "custom" and custom_model_path:
-            self.gen.load_model(custom_model_path)
-        else:
-            self.gen.load_model(model_choice)
-
         outputs= self.gen.predict(
                 prompt=prompt,
                 lineart_image=lineart_image, lineart_conditioning_scale=lineart_conditioning_scale,

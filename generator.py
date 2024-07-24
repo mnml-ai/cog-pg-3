@@ -22,107 +22,64 @@ from torch import nn
 import numpy as np
 
 class Generator:
-    def __init__(self, sd_path="stablediffusionapi/majicmix-v7", vae_path=None, load_ip_adapter=False, load_controlnets={}, use_compel=False, ip_image_encoder="weights/image_encoder", ip_weight="weights/ip-adapter_sd15.bin"):
+    def __init__(self, sd_path= "stablediffusionapi/majicmix-v7", vae_path= None, load_ip_adapter=False, load_controlnets={}, use_compel= False, ip_image_encoder= "weights/image_encoder", ip_weight="weights/ip-adapter_sd15.bin" ):
+
         self.use_compel = use_compel
         self.load_ip_adapter = load_ip_adapter
         self.ip_weight = ip_weight
         self.controlnets = {}
         self.preprocessors = {}
         self.detectors = {}
-        self.model_cache = {}
-        self.sd_path = sd_path
-        self.vae_path = vae_path
 
         if vae_path:
-            try:
-                self.vae = AutoencoderKL.from_pretrained(vae_path)
-            except Exception as e:
-                print(f"Error loading VAE: {e}")
-                self.vae = None
-        else:
-            self.vae = None
+            vae = AutoencoderKL.from_pretrained(vae_path)
 
         if load_ip_adapter:
-            try:
-                self.image_encoder = CLIPVisionModelWithProjection.from_pretrained(ip_image_encoder, local_files_only=True).to("cuda", dtype=torch.float16)
-            except Exception as e:
-                print(f"Error loading IP Adapter image encoder: {e}")
-                self.image_encoder = None
+            self.image_encoder = CLIPVisionModelWithProjection.from_pretrained(ip_image_encoder, local_files_only=True,).to("cuda", dtype=torch.float16)
 
-        try:
-            self.pipe = StableDiffusionPipeline.from_pretrained(
-                sd_path,
-                torch_dtype=torch.float16,
-                vae=self.vae
-            )
-            self.pipe.to("cuda", torch.float16)
-        except Exception as e:
-            print(f"Error loading Stable Diffusion pipeline: {e}")
-            raise
+        self.pipe = StableDiffusionPipeline.from_pretrained(
+            sd_path, torch_dtype=torch.float16,
+            # local_files_only=True,
+            vae= vae if vae_path else None
+        )
+        # self.pipe.scheduler = LCMScheduler.from_config(self.pipe.scheduler.config)
+        # self.pipe.to("cuda")
 
         if load_controlnets:
             for name in load_controlnets:
-                try:
-                    print(f"Loading ControlNet: {name}")
-                    model = AUX_IDS[name]
-                    self.controlnets[name] = ControlNetModel.from_pretrained(
-                        model["path"],
-                        torch_dtype=torch.float16,
-                    ).to("cuda")
-                    print(f"Loading ControlNet detector: {name}")
-                    self.detectors[name] = model['detector']()
-                except Exception as e:
-                    print(f"Error loading ControlNet {name}: {e}")
+                print("loading controlnets...")
+                model= AUX_IDS[name]
+                self.controlnets[name] = ControlNetModel.from_pretrained(
+                    model["path"],
+                    torch_dtype=torch.float16,
+                    # local_files_only=True,
+                ).to("cuda")
+                print("loading controlnet detectors..")
+                self.detectors[name] = model['detector']()
 
         if self.use_compel:
-            try:
-                self.compel_proc = Compel(tokenizer=self.pipe.tokenizer, text_encoder=self.pipe.text_encoder)
-            except Exception as e:
-                print(f"Error initializing Compel: {e}")
-                self.compel_proc = None
+            self.compel_proc = Compel(tokenizer=self.pipe.tokenizer, text_encoder=self.pipe.text_encoder)
 
-        try:
-            self.clip_seg_processor = AutoProcessor.from_pretrained("CIDAS/clipseg-rd64-refined")
-            self.clip_seg_model = CLIPSegForImageSegmentation.from_pretrained("CIDAS/clipseg-rd64-refined")
-        except Exception as e:
-            print(f"Error loading CLIP: {e}")
-            self.clip_seg_processor = None
-            self.clip_seg_model = None
+        #load clip
+        self.clip_seg_processor = AutoProcessor.from_pretrained("CIDAS/clipseg-rd64-refined")
+        self.clip_seg_model = CLIPSegForImageSegmentation.from_pretrained("CIDAS/clipseg-rd64-refined")
 
-        # Load LoRAs
-        lora_names = [
-            "more_details", "epi_noiseoffset2", "color_temperature_slider_v1",
-            "add_detail", "FilmVelvia3", "mp_v1", "id_v1", "ex_v1"
-        ]
-        for lora in lora_names:
-            try:
-                self.pipe.load_lora_weights("dsgnrai/lora", weight_name=f"{lora}.safetensors", adapter_name=lora)
-            except Exception as e:
-                print(f"Error loading LoRA {lora}: {e}")
+        #LOAD LORAS
+        self.pipe.load_lora_weights("dsgnrai/lora", weight_name="more_details.safetensors", adapter_name="more_details")
+        self.pipe.load_lora_weights("dsgnrai/lora", weight_name="epi_noiseoffset2.safetensors", adapter_name="epi_noiseoffset2")
+        self.pipe.load_lora_weights("dsgnrai/lora", weight_name="color_temperature_slider_v1.safetensors", adapter_name="color_temperature_slider_v1")
+        self.pipe.load_lora_weights("dsgnrai/lora", weight_name="add_detail.safetensors", adapter_name="add_detail")
+        self.pipe.load_lora_weights("dsgnrai/lora", weight_name="FilmVelvia3.safetensors", adapter_name="FilmVelvia3")
+        self.pipe.load_lora_weights("dsgnrai/lora", weight_name="mp_v1.safetensors", adapter_name="mp_v1")
+        self.pipe.load_lora_weights("dsgnrai/lora", weight_name="id_v1.safetensors", adapter_name="id_v1")
+        self.pipe.load_lora_weights("dsgnrai/lora", weight_name="ex_v1.safetensors", adapter_name="ex_v1")
 
-        # Load textual inversions
-        ti_names = [
-            "FastNegativeV2", "boring_e621_v4", "verybadimagenegative_v1.3"
-        ]
-        for ti in ti_names:
-            try:
-                self.pipe.load_textual_inversion("dsgnrai/negative-embeddings", weight_name=f"{ti}.pt", token=ti.split('.')[0])
-            except Exception as e:
-                print(f"Error loading textual inversion {ti}: {e}")
+        #load textual inversions
+        self.pipe.load_textual_inversion("dsgnrai/negative-embeddings", weight_name="FastNegativeV2.pt", token="FastNegativeV2")
+        self.pipe.load_textual_inversion("dsgnrai/negative-embeddings", weight_name="boring_e621_v4.pt", token="boring_e621_v4")
+        self.pipe.load_textual_inversion("dsgnrai/negative-embeddings", weight_name="verybadimagenegative_v1.3.pt", token="verybadimagenegative_v1")
 
-    def load_model(self, model_path):
-        if model_path in self.model_cache:
-            self.pipe = self.model_cache[model_path]
-        else:
-            if model_path.endswith('.safetensors'):
-                self.pipe = StableDiffusionPipeline.from_single_file(model_path, torch_dtype=torch.float16)
-            else:
-                self.pipe = StableDiffusionPipeline.from_pretrained(
-                    model_path, torch_dtype=torch.float16,
-                    vae=self.vae if self.vae_path else None
-                )
-            self.pipe.to("cuda", torch.float16)
-            self.model_cache[model_path] = self.pipe
+        self.pipe.to("cuda", torch.float16)
 
     def convert_image(self, image):
         #converts black pixels into transparent and white pixels to black
@@ -408,9 +365,7 @@ class Generator:
         )
         t3= time.time()
         print(f"Time taken to build pipe: {t3 - t2:.2f} seconds")
-        if scheduler == 'DPM++ 3M SDE Karras':
-            pipe.scheduler = SCHEDULERS[scheduler](pipe.scheduler.config)
-        elif scheduler == 'DPMSolverMultistep':
+        if scheduler=='DPMSolverMultistep':
             pipe.scheduler = SCHEDULERS[scheduler].from_config(pipe.scheduler.config, algorithm_type="sde-dpmsolver++")
         else:
             pipe.scheduler = SCHEDULERS[scheduler].from_config(pipe.scheduler.config)
