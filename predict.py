@@ -1,138 +1,73 @@
-from typing import Optional
-import torch
 import os
-from typing import List
+import re
+import time
+from typing import List, Dict
+import requests
+from urllib.parse import urlparse
+
+import torch
 import numpy as np
 from PIL import Image
 import cv2
-import time
-import sys
 
-from transformers import pipeline, AutoImageProcessor, UperNetForSemanticSegmentation
-from cog import BasePredictor, Input, Path
 from diffusers import (
+    StableDiffusionPipeline,
     StableDiffusionControlNetPipeline,
     ControlNetModel,
-    StableDiffusionPipeline,
-    StableDiffusionControlNetInpaintPipeline,
     DDIMScheduler,
     DPMSolverMultistepScheduler,
     EulerAncestralDiscreteScheduler,
-    EulerDiscreteScheduler,
-    HeunDiscreteScheduler,
-    LMSDiscreteScheduler,
-    PNDMScheduler,
-    UniPCMultistepScheduler,
+    AutoencoderKL,
 )
-from controlnet_aux import (
-    HEDdetector,
-    OpenposeDetector,
-    MLSDdetector,
-    CannyDetector,
-    LineartDetector,
-    MidasDetector
-)
-from controlnet_aux.util import ade_palette
-# from midas_hack import MidasDetector
-# from consistencydecoder import ConsistencyDecoder, save_image
-from compel import Compel
-from transformers import pipeline
-from diffusers.models import AutoencoderKL
-from Diffusers_IPAdapter.ip_adapter.ip_adapter import IPAdapter
 from transformers import CLIPVisionModelWithProjection
+from compel import Compel
+from cog import BasePredictor, Input, Path
+
 from generator import Generator
-from utils import SCHEDULERS
-
-def resize_image(image, max_width, max_height):
-    """
-    Resize an image to a specific height while maintaining the aspect ratio and ensuring
-    that neither width nor height exceed the specified maximum values.
-
-    Args:
-        image (PIL.Image.Image): The input image.
-        max_width (int): The maximum allowable width for the resized image.
-        max_height (int): The maximum allowable height for the resized image.
-
-    Returns:
-        PIL.Image.Image: The resized image.
-    """
-    # Get the original image dimensions
-    original_width, original_height = image.size
-
-    # Calculate the new dimensions to maintain the aspect ratio and not exceed the maximum values
-    width_ratio = max_width / original_width
-    height_ratio = max_height / original_height
-
-    # Choose the smallest ratio to ensure that neither width nor height exceeds the maximum
-    resize_ratio = min(width_ratio, height_ratio)
-
-    # Calculate the new width and height
-    new_width = int(original_width * resize_ratio)
-    new_height = int(original_height * resize_ratio)
-
-    # Resize the image
-    resized_image = image.resize((new_width, new_height), Image.LANCZOS)
-
-    return resized_image
-
-def sort_dict_by_string(input_string, your_dict):
-    if not input_string or not isinstance(input_string, str):
-        # Return the original dictionary if the string is empty or not a string
-        return your_dict
-
-    order_list = [item.strip() for item in input_string.split(',')]
-
-    # Include keys from the input string that are present in the dictionary
-    valid_keys = [key for key in order_list if key in your_dict]
-
-    # Include keys from the dictionary that are not in the input string
-    remaining_keys = [key for key in your_dict if key not in valid_keys]
-
-    sorted_dict = {key: your_dict[key] for key in valid_keys}
-    sorted_dict.update({key: your_dict[key] for key in remaining_keys})
-
-    return sorted_dict
-
-
-AUX_IDS = {
-    # "depth": "fusing/stable-diffusion-v1-5-controlnet-depth",
-    "scribble": "fusing/stable-diffusion-v1-5-controlnet-scribble",
-    'lineart': "ControlNet-1-1-preview/control_v11p_sd15_lineart",
-    'tile': "lllyasviel/control_v11f1e_sd15_tile",
-    'brightness': "ioclab/control_v1p_sd15_brightness",
-    "inpainting": "lllyasviel/control_v11p_sd15_inpaint",
-}
-
-
-
-
-SD15_WEIGHTS = "weights"
-CONTROLNET_CACHE = "controlnet-cache"
-PROCESSORS_CACHE = "processors-cache"
-MISSING_WEIGHTS = []
-
-# if not os.path.exists(CONTROLNET_CACHE) or not os.path.exists(PROCESSORS_CACHE):
-#     print(
-#         "controlnet weights missing, use `cog run python script/download_weights` to download"
-#     )
-#     MISSING_WEIGHTS.append("controlnet")
-
-# if not os.path.exists(SD15_WEIGHTS):
-#     print(
-#         "sd15 weights missing, use `cog run python` and then load and save_pretrained('weights')"
-#     )
-#     MISSING_WEIGHTS.append("sd15")
-
+from utils import SCHEDULERS, resize_image
 
 class Predictor(BasePredictor):
     def setup(self):
-        """Load the model into memory to make running multiple predictions efficient"""
-        self.gen = Generator(
-            sd_path= "SG161222/Realistic_Vision_V6.0_B1_noVAE",
-            vae_path= "stabilityai/sd-vae-ft-mse", use_compel=True,
-            load_controlnets={"lineart","mlsd", "canny", "depth", "inpainting"},
-            load_ip_adapter=True
-        )
+        """Initialize the predictor."""
+        self.loaded_models = {}
+        os.makedirs("model_cache", exist_ok=True)
+
+    def _download_model(self, url: str) -> str:
+        """Download a model file from a URL."""
+        local_filename = os.path.join("model_cache", os.path.basename(urlparse(url).path))
+        
+        if os.path.exists(local_filename):
+            print(f"Model file already exists: {local_filename}")
+            return local_filename
+
+        print(f"Downloading model from {url}")
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+        
+        with open(local_filename, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        return local_filename
+
+    def _load_custom_model(self, model_url: str):
+        """Load a custom model from a URL."""
+        if model_url in self.loaded_models:
+            return self.loaded_models[model_url]
+
+        model_path = self._download_model(model_url)
+        print(f"Loading custom model from {model_path}")
+        try:
+            pipe = StableDiffusionPipeline.from_single_file(
+                model_path,
+                torch_dtype=torch.float16,
+                use_safetensors=True,
+            ).to("cuda")
+            self.loaded_models[model_url] = pipe
+            return pipe
+        except Exception as e:
+            print(f"Failed to load custom model: {e}")
+            raise ValueError(f"Failed to load custom model from {model_url}")
 
     @torch.inference_mode()
     def predict(
@@ -175,20 +110,16 @@ class Predictor(BasePredictor):
             description="Max height/Resolution of image",
             default=512,
         ),
-        # consistency_decoder: bool = Input(
-        #     description="Enable consistency decoder",
-        #     default=True,
-        # ),
         scheduler: str = Input(
             default="DDIM",
             choices=SCHEDULERS.keys(),
             description="Choose a scheduler.",
         ),
         lineart_image: Path = Input(
-            description="Control image for canny controlnet", default=None
+            description="Control image for lineart controlnet", default=None
         ),
         lineart_conditioning_scale: float = Input(
-            description="Conditioning scale for canny controlnet",
+            description="Conditioning scale for lineart controlnet",
             default=1,
         ),
         depth_image: Path = Input(
@@ -225,7 +156,7 @@ class Predictor(BasePredictor):
             description="comma seperated list of objects you dont want to mask, AI will auto delete these objects from mask, only works if positive_auto_mask_text is given", default=None
         ),
         inpainting_conditioning_scale: float = Input(
-            description="Conditioning scale for brightness controlnet",
+            description="Conditioning scale for inpainting controlnet",
             default=1,
         ),
         sorted_controlnets: str = Input(
@@ -270,36 +201,48 @@ class Predictor(BasePredictor):
         ex_v1_lora_weight: float = Input(
             description="disabled on 0", default=0,
         ),
-
+        custom_model_url: str = Input(description="URL to a custom model file (optional)", default=None),
     ) -> List[Path]:
-        outputs= self.gen.predict(
-                prompt=prompt,
-                lineart_image=lineart_image, lineart_conditioning_scale=lineart_conditioning_scale,
-                depth_conditioning_scale= depth_conditioning_scale, depth_image= depth_image,
-                mlsd_image= mlsd_image, mlsd_conditioning_scale=mlsd_conditioning_scale,
-                canny_conditioning_scale= canny_conditioning_scale, canny_image= canny_image,
-
-                inpainting_image=inpainting_image, mask_image=mask_image, inpainting_conditioning_scale=inpainting_conditioning_scale,
-                num_outputs=num_outputs, max_width=max_width, max_height=max_height,
-                scheduler=scheduler, num_inference_steps=num_inference_steps, guidance_scale=guidance_scale,
-                seed=seed, eta=eta,
-                negative_prompt=negative_prompt,
-                guess_mode=guess_mode, disable_safety_check=disable_safety_check,
-                sorted_controlnets=sorted_controlnets,
-                ip_adapter_image=ip_adapter_image, ip_adapter_weight=ip_adapter_weight,
-                img2img=img2img_image, img2img_strength= img2img_strength, ip_ckpt=ip_adapter_ckpt,
-                text_for_auto_mask=positive_auto_mask_text.split(",") if positive_auto_mask_text else None,
-                negative_text_for_auto_mask= negative_auto_mask_text.split(",") if negative_auto_mask_text else None,
-
-                add_more_detail_lora_scale= add_more_detail_lora_scale, detail_tweaker_lora_weight= detail_tweaker_lora_weight, film_grain_lora_weight= film_grain_lora_weight, 
-                epi_noise_offset_lora_weight=epi_noise_offset_lora_weight, color_temprature_slider_lora_weight=color_temprature_slider_lora_weight, 
-                mp_lora_weight=mp_lora_weight, id_lora_weight=id_lora_weight,
-                ex_v1_lora_weight=ex_v1_lora_weight,
+        if custom_model_url:
+            self.gen = self._load_custom_model(custom_model_url)
+        else:
+            self.gen = Generator(
+                sd_path="SG161222/Realistic_Vision_V6.0_B1_noVAE",
+                vae_path="stabilityai/sd-vae-ft-mse",
+                use_compel=True,
+                load_controlnets={"lineart", "mlsd", "canny", "depth", "inpainting"},
+                load_ip_adapter=True
             )
 
-        output_paths= []
-        i=0
-        for output in outputs:
+        outputs = self.gen.predict(
+            prompt=prompt,
+            lineart_image=lineart_image, lineart_conditioning_scale=lineart_conditioning_scale,
+            depth_conditioning_scale=depth_conditioning_scale, depth_image=depth_image,
+            mlsd_image=mlsd_image, mlsd_conditioning_scale=mlsd_conditioning_scale,
+            canny_conditioning_scale=canny_conditioning_scale, canny_image=canny_image,
+            inpainting_image=inpainting_image, mask_image=mask_image, inpainting_conditioning_scale=inpainting_conditioning_scale,
+            num_outputs=num_outputs, max_width=max_width, max_height=max_height,
+            scheduler=scheduler, num_inference_steps=num_inference_steps, guidance_scale=guidance_scale,
+            seed=seed, eta=eta,
+            negative_prompt=negative_prompt,
+            guess_mode=guess_mode, disable_safety_check=disable_safety_check,
+            sorted_controlnets=sorted_controlnets,
+            ip_adapter_image=ip_adapter_image, ip_adapter_weight=ip_adapter_weight,
+            img2img=img2img_image, img2img_strength=img2img_strength, ip_ckpt=ip_adapter_ckpt,
+            text_for_auto_mask=positive_auto_mask_text.split(",") if positive_auto_mask_text else None,
+            negative_text_for_auto_mask=negative_auto_mask_text.split(",") if negative_auto_mask_text else None,
+            add_more_detail_lora_scale=add_more_detail_lora_scale, 
+            detail_tweaker_lora_weight=detail_tweaker_lora_weight, 
+            film_grain_lora_weight=film_grain_lora_weight, 
+            epi_noise_offset_lora_weight=epi_noise_offset_lora_weight, 
+            color_temprature_slider_lora_weight=color_temprature_slider_lora_weight,
+            mp_lora_weight=mp_lora_weight, 
+            id_lora_weight=id_lora_weight,
+            ex_v1_lora_weight=ex_v1_lora_weight,
+        )
+
+        output_paths = []
+        for i, output in enumerate(outputs):
             output_path = f"/tmp/output_{i}.png"
             output.images[0].save(output_path)
             output_paths.append(Path(output_path))
