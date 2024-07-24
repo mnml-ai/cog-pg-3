@@ -1,0 +1,28 @@
+import os
+import subprocess
+
+# Clone the repository
+# subprocess.run(["git", "clone", "https://github.com/cubiq/Diffusers_IPAdapter.git"])
+
+# Change directory to the cloned repository
+# os.chdir("Diffusers_IPAdapter")
+
+# # Install requirements
+# subprocess.run(["pip", "install", "-r", "requirements.txt"])
+
+# subprocess.run(["cd", "install", "-r", "requirements.txt"])
+
+# Create directories to store the downloaded files
+os.makedirs("weights", exist_ok=True)
+
+# Download IP-Adapter model checkpoints
+subprocess.run(["wget", "-P", "weights/", "https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter_sd15.bin"])
+subprocess.run(["wget", "-P", "weights/", "https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter-plus_sd15.bin"])
+subprocess.run(["wget", "-P", "weights/", "https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter-plus-face_sd15.bin"])
+
+# Create directories to store the downloaded files
+os.makedirs("weights/image_encoder", exist_ok=True)
+
+# Download image_encoder model checkpoints
+subprocess.run(["wget", "-O", "weights/image_encoder/pytorch_model.bin", "https://huggingface.co/h94/IP-Adapter/resolve/main/models/image_encoder/pytorch_model.bin"])
+subprocess.run(["wget", "-O", "weights/image_encoder/config.json", "https://huggingface.co/h94/IP-Adapter/resolve/main/models/image_encoder/config.json"])

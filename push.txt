@@ -1,0 +1,16 @@
+
+
+git clone https://github.com/mnml-ai/cog-mnml-x-public.git
+cd cog-mnml-x-public
+
+
+
+sudo curl -o /usr/local/bin/cog -L https://github.com/replicate/cog/releases/latest/download/cog_`uname -s`_`uname -m`
+sudo chmod +x /usr/local/bin/cog
+
+
+sudo cog login
+
+sudo python3 script/download_weights
+
+sudo cog push r8.im/bytesavant0/sd-node-x
