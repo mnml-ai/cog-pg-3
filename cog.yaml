@@ -5,6 +5,7 @@ build:
   cuda: "11.8"
   python_version: "3.9"
   python_packages:
+    - "numpy==1.23.5"  # Add this line
     - "diffusers==0.19.3"
     - "peft==0.4.0"
     - "torch==2.0.0"
