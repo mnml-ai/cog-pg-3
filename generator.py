@@ -4,6 +4,7 @@
 import torch
 import os
 import requests
+from urllib.parse import urlparse, unquote
 from safetensors.torch import load_file
 from PIL import Image, ImageEnhance
 
@@ -38,13 +39,15 @@ class Generator:
         if load_ip_adapter:
             self.image_encoder = CLIPVisionModelWithProjection.from_pretrained(ip_image_encoder, local_files_only=True,).to("cuda", dtype=torch.float16)
 
+        # Initialize pipe with the base model
+        self.pipe = StableDiffusionPipeline.from_pretrained(
+            sd_path, torch_dtype=torch.float16,
+            vae=vae if vae_path else None
+        )
+
+        # Load finetuned model if URL is provided
         if finetuned_model_url:
-            self.pipe = self.load_finetuned_model(finetuned_model_url, sd_path)
-        else:
-            self.pipe = StableDiffusionPipeline.from_pretrained(
-                sd_path, torch_dtype=torch.float16,
-                vae=vae if vae_path else None
-            )
+            self.load_finetuned_model(finetuned_model_url)
 
         if load_controlnets:
             for name in load_controlnets:
@@ -84,18 +87,20 @@ class Generator:
 
         self.pipe.to("cuda", torch.float16)
 
-    def load_finetuned_model(self, url, base_model_path):
+    def load_finetuned_model(self, url):
         try:
             cache_dir = os.path.join(os.getcwd(), "model_cache")
             os.makedirs(cache_dir, exist_ok=True)
             
-            filename = url.split("/")[-1]
+            # Extract filename from URL
+            parsed_url = urlparse(url)
+            filename = os.path.basename(unquote(parsed_url.path))
             local_path = os.path.join(cache_dir, filename)
             
             if not os.path.exists(local_path):
                 print(f"Downloading finetuned model from {url}")
                 response = requests.get(url)
-                response.raise_for_status()  # Raises an HTTPError for bad responses
+                response.raise_for_status()
                 with open(local_path, "wb") as f:
                     f.write(response.content)
             
@@ -103,10 +108,10 @@ class Generator:
             finetuned_state_dict = load_file(local_path)
             self.pipe.unet.load_state_dict(finetuned_state_dict, strict=False)
             
-            return self.pipe
         except Exception as e:
             print(f"Error loading finetuned model: {str(e)}")
-            return self.pipe  # Return the original pipe if there's an error
+            # No need to return anything, as we're modifying self.pipe in place
+
     
     def convert_image(self, image):
         #converts black pixels into transparent and white pixels to black
@@ -334,7 +339,7 @@ class Generator:
         loras= []
 
         if finetuned_model_url and finetuned_model_url != self.current_finetuned_model_url:
-            self.pipe = self.load_finetuned_model(finetuned_model_url, self.pipe.config.name_or_path)
+            self.load_finetuned_model(finetuned_model_url)
             self.current_finetuned_model_url = finetuned_model_url
 
         if add_more_detail_lora_scale!=0:

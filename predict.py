@@ -278,7 +278,7 @@ class Predictor(BasePredictor):
         finetuned_model_url: str = Input(description="URL to a finetuned model safetensor file. If provided, this model will be used instead of the default.", default=None),
     ) -> List[Path]:
         
-        if self.gen is None or finetuned_model_url != getattr(self.gen, 'current_finetuned_model_url', None):
+        if self.gen is None:
             self.gen = Generator(
                 sd_path="SG161222/Realistic_Vision_V6.0_B1_noVAE",
                 vae_path="stabilityai/sd-vae-ft-mse",
@@ -287,6 +287,9 @@ class Predictor(BasePredictor):
                 load_ip_adapter=True,
                 finetuned_model_url=finetuned_model_url
             )
+        elif finetuned_model_url != getattr(self.gen, 'current_finetuned_model_url', None):
+            self.gen.load_finetuned_model(finetuned_model_url)
+            self.gen.current_finetuned_model_url = finetuned_model_url
 
         outputs= self.gen.predict(
                 prompt=prompt,
