@@ -3,6 +3,8 @@
 
 import torch
 import os
+import requests
+from safetensors.torch import load_file
 from PIL import Image, ImageEnhance
 
 from diffusers import (
@@ -22,8 +24,7 @@ from torch import nn
 import numpy as np
 
 class Generator:
-    def __init__(self, sd_path= "stablediffusionapi/majicmix-v7", vae_path= None, load_ip_adapter=False, load_controlnets={}, use_compel= False, ip_image_encoder= "weights/image_encoder", ip_weight="weights/ip-adapter_sd15.bin" ):
-
+    def __init__(self, sd_path="stablediffusionapi/majicmix-v7", vae_path=None, load_ip_adapter=False, load_controlnets={}, use_compel=False, ip_image_encoder="weights/image_encoder", ip_weight="weights/ip-adapter_sd15.bin", finetuned_model_url=None):
         self.use_compel = use_compel
         self.load_ip_adapter = load_ip_adapter
         self.ip_weight = ip_weight
@@ -37,13 +38,13 @@ class Generator:
         if load_ip_adapter:
             self.image_encoder = CLIPVisionModelWithProjection.from_pretrained(ip_image_encoder, local_files_only=True,).to("cuda", dtype=torch.float16)
 
-        self.pipe = StableDiffusionPipeline.from_pretrained(
-            sd_path, torch_dtype=torch.float16,
-            # local_files_only=True,
-            vae= vae if vae_path else None
-        )
-        # self.pipe.scheduler = LCMScheduler.from_config(self.pipe.scheduler.config)
-        # self.pipe.to("cuda")
+        if finetuned_model_url:
+            self.pipe = self.load_finetuned_model(finetuned_model_url, sd_path)
+        else:
+            self.pipe = StableDiffusionPipeline.from_pretrained(
+                sd_path, torch_dtype=torch.float16,
+                vae=vae if vae_path else None
+            )
 
         if load_controlnets:
             for name in load_controlnets:
@@ -60,6 +61,8 @@ class Generator:
         if self.use_compel:
             self.compel_proc = Compel(tokenizer=self.pipe.tokenizer, text_encoder=self.pipe.text_encoder)
 
+        self.current_finetuned_model_url = finetuned_model_url
+        
         #load clip
         self.clip_seg_processor = AutoProcessor.from_pretrained("CIDAS/clipseg-rd64-refined")
         self.clip_seg_model = CLIPSegForImageSegmentation.from_pretrained("CIDAS/clipseg-rd64-refined")
@@ -81,6 +84,30 @@ class Generator:
 
         self.pipe.to("cuda", torch.float16)
 
+    def load_finetuned_model(self, url, base_model_path):
+        try:
+            cache_dir = os.path.join(os.getcwd(), "model_cache")
+            os.makedirs(cache_dir, exist_ok=True)
+            
+            filename = url.split("/")[-1]
+            local_path = os.path.join(cache_dir, filename)
+            
+            if not os.path.exists(local_path):
+                print(f"Downloading finetuned model from {url}")
+                response = requests.get(url)
+                response.raise_for_status()  # Raises an HTTPError for bad responses
+                with open(local_path, "wb") as f:
+                    f.write(response.content)
+            
+            print(f"Loading finetuned model from {local_path}")
+            finetuned_state_dict = load_file(local_path)
+            self.pipe.unet.load_state_dict(finetuned_state_dict, strict=False)
+            
+            return self.pipe
+        except Exception as e:
+            print(f"Error loading finetuned model: {str(e)}")
+            return self.pipe  # Return the original pipe if there's an error
+    
     def convert_image(self, image):
         #converts black pixels into transparent and white pixels to black
         grayscale_image = image.convert("L")
@@ -300,11 +327,16 @@ class Generator:
                 add_more_detail_lora_scale= 0, detail_tweaker_lora_weight= 0, film_grain_lora_weight= 0, 
                 epi_noise_offset_lora_weight=0, color_temprature_slider_lora_weight=0,
                 mp_lora_weight=0, id_lora_weight=0, ex_v1_lora_weight=0,
-
+                finetuned_model_url=None
                 ):
         
         lora_weights=[]
         loras= []
+
+        if finetuned_model_url and finetuned_model_url != self.current_finetuned_model_url:
+            self.pipe = self.load_finetuned_model(finetuned_model_url, self.pipe.config.name_or_path)
+            self.current_finetuned_model_url = finetuned_model_url
+
         if add_more_detail_lora_scale!=0:
             lora_weights.append(add_more_detail_lora_scale)
             loras.append("more_details")
