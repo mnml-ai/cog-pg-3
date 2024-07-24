@@ -7,7 +7,6 @@ from PIL import Image
 import cv2
 import time
 import sys
-import logging
 
 from transformers import pipeline, AutoImageProcessor, UperNetForSemanticSegmentation
 from cog import BasePredictor, Input, Path
@@ -34,6 +33,8 @@ from controlnet_aux import (
     MidasDetector
 )
 from controlnet_aux.util import ade_palette
+# from midas_hack import MidasDetector
+# from consistencydecoder import ConsistencyDecoder, save_image
 from compel import Compel
 from transformers import pipeline
 from diffusers.models import AutoencoderKL
@@ -41,10 +42,6 @@ from Diffusers_IPAdapter.ip_adapter.ip_adapter import IPAdapter
 from transformers import CLIPVisionModelWithProjection
 from generator import Generator
 from utils import SCHEDULERS
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 def resize_image(image, max_width, max_height):
     """
@@ -59,26 +56,46 @@ def resize_image(image, max_width, max_height):
     Returns:
         PIL.Image.Image: The resized image.
     """
+    # Get the original image dimensions
     original_width, original_height = image.size
+
+    # Calculate the new dimensions to maintain the aspect ratio and not exceed the maximum values
     width_ratio = max_width / original_width
     height_ratio = max_height / original_height
+
+    # Choose the smallest ratio to ensure that neither width nor height exceeds the maximum
     resize_ratio = min(width_ratio, height_ratio)
+
+    # Calculate the new width and height
     new_width = int(original_width * resize_ratio)
     new_height = int(original_height * resize_ratio)
+
+    # Resize the image
     resized_image = image.resize((new_width, new_height), Image.LANCZOS)
+
     return resized_image
 
 def sort_dict_by_string(input_string, your_dict):
     if not input_string or not isinstance(input_string, str):
+        # Return the original dictionary if the string is empty or not a string
         return your_dict
+
     order_list = [item.strip() for item in input_string.split(',')]
+
+    # Include keys from the input string that are present in the dictionary
     valid_keys = [key for key in order_list if key in your_dict]
+
+    # Include keys from the dictionary that are not in the input string
     remaining_keys = [key for key in your_dict if key not in valid_keys]
+
     sorted_dict = {key: your_dict[key] for key in valid_keys}
     sorted_dict.update({key: your_dict[key] for key in remaining_keys})
+
     return sorted_dict
 
+
 AUX_IDS = {
+    # "depth": "fusing/stable-diffusion-v1-5-controlnet-depth",
     "scribble": "fusing/stable-diffusion-v1-5-controlnet-scribble",
     'lineart': "ControlNet-1-1-preview/control_v11p_sd15_lineart",
     'tile': "lllyasviel/control_v11f1e_sd15_tile",
@@ -86,17 +103,43 @@ AUX_IDS = {
     "inpainting": "lllyasviel/control_v11p_sd15_inpaint",
 }
 
+
+
+
+SD15_WEIGHTS = "weights"
+CONTROLNET_CACHE = "controlnet-cache"
+PROCESSORS_CACHE = "processors-cache"
+MISSING_WEIGHTS = []
+
+# if not os.path.exists(CONTROLNET_CACHE) or not os.path.exists(PROCESSORS_CACHE):
+#     print(
+#         "controlnet weights missing, use `cog run python script/download_weights` to download"
+#     )
+#     MISSING_WEIGHTS.append("controlnet")
+
+# if not os.path.exists(SD15_WEIGHTS):
+#     print(
+#         "sd15 weights missing, use `cog run python` and then load and save_pretrained('weights')"
+#     )
+#     MISSING_WEIGHTS.append("sd15")
+
+
 class Predictor(BasePredictor):
     def setup(self):
         """Load the model into memory to make running multiple predictions efficient"""
-        self.gen = None
+        self.gen = Generator(
+            sd_path= "SG161222/Realistic_Vision_V6.0_B1_noVAE",
+            vae_path= "stabilityai/sd-vae-ft-mse", use_compel=True,
+            load_controlnets={"lineart","mlsd", "canny", "depth", "inpainting"},
+            load_ip_adapter=True
+        )
 
     @torch.inference_mode()
     def predict(
         self,
-        prompt: str = Input(description="Prompt - using compel, use +++ to increase words weight"),
+        prompt: str = Input(description="Prompt - using compel, use +++ to increase words weight:: doc: https://github.com/damian0815/compel/tree/main/doc || https://invoke-ai.github.io/InvokeAI/features/PROMPTS/#attention-weighting",),
         negative_prompt: str = Input(
-            description="Negative prompt - using compel, use +++ to increase words weight",
+            description="Negative prompt - using compel, use +++ to increase words weight//// negative-embeddings available ///// FastNegativeV2 , boring_e621_v4 , verybadimagenegative_v1 || to use them, write their keyword in negative prompt",
             default="Longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality",
         ),
         num_inference_steps: int = Input(description="Steps to run denoising", default=20),
@@ -132,6 +175,10 @@ class Predictor(BasePredictor):
             description="Max height/Resolution of image",
             default=512,
         ),
+        # consistency_decoder: bool = Input(
+        #     description="Enable consistency decoder",
+        #     default=True,
+        # ),
         scheduler: str = Input(
             default="DDIM",
             choices=SCHEDULERS.keys(),
@@ -223,27 +270,15 @@ class Predictor(BasePredictor):
         ex_v1_lora_weight: float = Input(
             description="disabled on 0", default=0,
         ),
-        finetuned_model_url: str = Input(description="URL to a finetuned model safetensor file. If provided, this model will be used instead of the default.", default=None),
-    ) -> List[Path]:
-        if self.gen is None:
-            self.gen = Generator(
-                sd_path="SG161222/Realistic_Vision_V6.0_B1_noVAE",
-                vae_path="stabilityai/sd-vae-ft-mse",
-                use_compel=True,
-                load_controlnets={"lineart","mlsd", "canny", "depth", "inpainting"},
-                load_ip_adapter=True,
-                finetuned_model_url=finetuned_model_url
-            )
-        elif finetuned_model_url != getattr(self.gen, 'current_finetuned_model_url', None):
-            self.gen.load_finetuned_model(finetuned_model_url)
-            self.gen.current_finetuned_model_url = finetuned_model_url
 
-        outputs = self.gen.predict(
+    ) -> List[Path]:
+        outputs= self.gen.predict(
                 prompt=prompt,
                 lineart_image=lineart_image, lineart_conditioning_scale=lineart_conditioning_scale,
-                depth_conditioning_scale=depth_conditioning_scale, depth_image=depth_image,
-                mlsd_image=mlsd_image, mlsd_conditioning_scale=mlsd_conditioning_scale,
-                canny_conditioning_scale=canny_conditioning_scale, canny_image=canny_image,
+                depth_conditioning_scale= depth_conditioning_scale, depth_image= depth_image,
+                mlsd_image= mlsd_image, mlsd_conditioning_scale=mlsd_conditioning_scale,
+                canny_conditioning_scale= canny_conditioning_scale, canny_image= canny_image,
+
                 inpainting_image=inpainting_image, mask_image=mask_image, inpainting_conditioning_scale=inpainting_conditioning_scale,
                 num_outputs=num_outputs, max_width=max_width, max_height=max_height,
                 scheduler=scheduler, num_inference_steps=num_inference_steps, guidance_scale=guidance_scale,
@@ -252,22 +287,19 @@ class Predictor(BasePredictor):
                 guess_mode=guess_mode, disable_safety_check=disable_safety_check,
                 sorted_controlnets=sorted_controlnets,
                 ip_adapter_image=ip_adapter_image, ip_adapter_weight=ip_adapter_weight,
-                img2img=img2img_image, img2img_strength=img2img_strength, ip_ckpt=ip_adapter_ckpt,
+                img2img=img2img_image, img2img_strength= img2img_strength, ip_ckpt=ip_adapter_ckpt,
                 text_for_auto_mask=positive_auto_mask_text.split(",") if positive_auto_mask_text else None,
-                negative_text_for_auto_mask=negative_auto_mask_text.split(",") if negative_auto_mask_text else None,
-                add_more_detail_lora_scale=add_more_detail_lora_scale, 
-                detail_tweaker_lora_weight=detail_tweaker_lora_weight, 
-                film_grain_lora_weight=film_grain_lora_weight, 
-                epi_noise_offset_lora_weight=epi_noise_offset_lora_weight, 
-                color_temprature_slider_lora_weight=color_temprature_slider_lora_weight, 
-                mp_lora_weight=mp_lora_weight, 
-                id_lora_weight=id_lora_weight,
+                negative_text_for_auto_mask= negative_auto_mask_text.split(",") if negative_auto_mask_text else None,
+
+                add_more_detail_lora_scale= add_more_detail_lora_scale, detail_tweaker_lora_weight= detail_tweaker_lora_weight, film_grain_lora_weight= film_grain_lora_weight, 
+                epi_noise_offset_lora_weight=epi_noise_offset_lora_weight, color_temprature_slider_lora_weight=color_temprature_slider_lora_weight, 
+                mp_lora_weight=mp_lora_weight, id_lora_weight=id_lora_weight,
                 ex_v1_lora_weight=ex_v1_lora_weight,
-                finetuned_model_url=finetuned_model_url,
             )
 
-        output_paths = []
-        for i, output in enumerate(outputs):
+        output_paths= []
+        i=0
+        for output in outputs:
             output_path = f"/tmp/output_{i}.png"
             output.images[0].save(output_path)
             output_paths.append(Path(output_path))
