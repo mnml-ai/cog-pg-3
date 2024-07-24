@@ -3,7 +3,7 @@ build:
   system_packages:
     - "python3-opencv"
   #cuda: "11.6"
-  python_version: "3.9"
+  python_version: "3.10"
   python_packages:
     - "diffusers"
     - "peft"
@@ -15,6 +15,6 @@ build:
     - "accelerate"
     - "triton"
     - "compel"
-    # - "git+https://github.com/openai/consistencydecoder.git"
+    - "torchsde==0.2.6"
 
 predict: "predict.py:Predictor"
