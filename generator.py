@@ -367,8 +367,11 @@ class Generator:
         print(f"Time taken to build pipe: {t3 - t2:.2f} seconds")
         if scheduler=='DPMSolverMultistep':
             pipe.scheduler = SCHEDULERS[scheduler].from_config(pipe.scheduler.config, algorithm_type="sde-dpmsolver++")
+        elif scheduler == "DPM++ 3M SDE Karras":
+            pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config, use_karras_sigmas=True, algorithm_type="sde-dpmsolver++")
         else:
             pipe.scheduler = SCHEDULERS[scheduler].from_config(pipe.scheduler.config)
+
         t4= time.time()
         print(f"Time taken to apply scheduler-- : {t4 - t3:.2f} seconds")
         t5= time.time()

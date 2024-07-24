@@ -75,7 +75,7 @@ SCHEDULERS = {
     "K_EULER_ANCESTRAL": EulerAncestralDiscreteScheduler,
     "KDPM2DiscreteScheduler": KDPM2DiscreteScheduler,
     "KDPM2AncestralDiscreteScheduler": KDPM2AncestralDiscreteScheduler,
-     "DPM++ 3M SDE Karras": lambda config: DPMSolverMultistepScheduler.from_config(config, use_karras_sigmas=True, algorithm_type="sde-dpmsolver++")
+    "DPM++ 3M SDE Karras": "DPM++ 3M SDE Karras"
 }
 
 
