@@ -7,6 +7,7 @@ from PIL import Image
 import cv2
 import time
 import sys
+import logging
 
 from transformers import pipeline, AutoImageProcessor, UperNetForSemanticSegmentation
 from cog import BasePredictor, Input, Path
@@ -39,9 +40,43 @@ from diffusers.models import AutoencoderKL
 from Diffusers_IPAdapter.ip_adapter.ip_adapter import IPAdapter
 from transformers import CLIPVisionModelWithProjection
 from generator import Generator
-from utils import SCHEDULERS, resize_image, sort_dict_by_string
+from utils import SCHEDULERS
 
-from safetensors.torch import load_file
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def resize_image(image, max_width, max_height):
+    """
+    Resize an image to a specific height while maintaining the aspect ratio and ensuring
+    that neither width nor height exceed the specified maximum values.
+
+    Args:
+        image (PIL.Image.Image): The input image.
+        max_width (int): The maximum allowable width for the resized image.
+        max_height (int): The maximum allowable height for the resized image.
+
+    Returns:
+        PIL.Image.Image: The resized image.
+    """
+    original_width, original_height = image.size
+    width_ratio = max_width / original_width
+    height_ratio = max_height / original_height
+    resize_ratio = min(width_ratio, height_ratio)
+    new_width = int(original_width * resize_ratio)
+    new_height = int(original_height * resize_ratio)
+    resized_image = image.resize((new_width, new_height), Image.LANCZOS)
+    return resized_image
+
+def sort_dict_by_string(input_string, your_dict):
+    if not input_string or not isinstance(input_string, str):
+        return your_dict
+    order_list = [item.strip() for item in input_string.split(',')]
+    valid_keys = [key for key in order_list if key in your_dict]
+    remaining_keys = [key for key in your_dict if key not in valid_keys]
+    sorted_dict = {key: your_dict[key] for key in valid_keys}
+    sorted_dict.update({key: your_dict[key] for key in remaining_keys})
+    return sorted_dict
 
 AUX_IDS = {
     "scribble": "fusing/stable-diffusion-v1-5-controlnet-scribble",
@@ -59,9 +94,9 @@ class Predictor(BasePredictor):
     @torch.inference_mode()
     def predict(
         self,
-        prompt: str = Input(description="Prompt - using compel, use +++ to increase words weight:: doc: https://github.com/damian0815/compel/tree/main/doc || https://invoke-ai.github.io/InvokeAI/features/PROMPTS/#attention-weighting",),
+        prompt: str = Input(description="Prompt - using compel, use +++ to increase words weight"),
         negative_prompt: str = Input(
-            description="Negative prompt - using compel, use +++ to increase words weight//// negative-embeddings available ///// FastNegativeV2 , boring_e621_v4 , verybadimagenegative_v1 || to use them, write their keyword in negative prompt",
+            description="Negative prompt - using compel, use +++ to increase words weight",
             default="Longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality",
         ),
         num_inference_steps: int = Input(description="Steps to run denoising", default=20),
@@ -190,50 +225,34 @@ class Predictor(BasePredictor):
         ),
         finetuned_model_url: str = Input(description="URL to a finetuned model safetensor file. If provided, this model will be used instead of the default.", default=None),
     ) -> List[Path]:
-        try:
-            if self.gen is None:
-                self.gen = Generator(
-                    sd_path="SG161222/Realistic_Vision_V6.0_B1_noVAE",
-                    vae_path="stabilityai/sd-vae-ft-mse",
-                    use_compel=True,
-                    load_controlnets={"lineart", "mlsd", "canny", "depth", "inpainting"},
-                    load_ip_adapter=True,
-                    finetuned_model_url=finetuned_model_url
-                )
-            elif finetuned_model_url != getattr(self.gen, 'current_finetuned_model_url', None):
-                self.gen.load_finetuned_model(finetuned_model_url)
-                self.gen.current_finetuned_model_url = finetuned_model_url
+        if self.gen is None:
+            self.gen = Generator(
+                sd_path="SG161222/Realistic_Vision_V6.0_B1_noVAE",
+                vae_path="stabilityai/sd-vae-ft-mse",
+                use_compel=True,
+                load_controlnets={"lineart","mlsd", "canny", "depth", "inpainting"},
+                load_ip_adapter=True,
+                finetuned_model_url=finetuned_model_url
+            )
+        elif finetuned_model_url != getattr(self.gen, 'current_finetuned_model_url', None):
+            self.gen.load_finetuned_model(finetuned_model_url)
+            self.gen.current_finetuned_model_url = finetuned_model_url
 
-            outputs = self.gen.predict(
+        outputs = self.gen.predict(
                 prompt=prompt,
-                lineart_image=lineart_image, 
-                lineart_conditioning_scale=lineart_conditioning_scale,
-                depth_conditioning_scale=depth_conditioning_scale, 
-                depth_image=depth_image,
-                mlsd_image=mlsd_image, 
-                mlsd_conditioning_scale=mlsd_conditioning_scale,
-                canny_conditioning_scale=canny_conditioning_scale, 
-                canny_image=canny_image,
-                inpainting_image=inpainting_image, 
-                mask_image=mask_image, 
-                inpainting_conditioning_scale=inpainting_conditioning_scale,
-                num_outputs=num_outputs, 
-                max_width=max_width, 
-                max_height=max_height,
-                scheduler=scheduler, 
-                num_inference_steps=num_inference_steps, 
-                guidance_scale=guidance_scale,
-                seed=seed, 
-                eta=eta,
+                lineart_image=lineart_image, lineart_conditioning_scale=lineart_conditioning_scale,
+                depth_conditioning_scale=depth_conditioning_scale, depth_image=depth_image,
+                mlsd_image=mlsd_image, mlsd_conditioning_scale=mlsd_conditioning_scale,
+                canny_conditioning_scale=canny_conditioning_scale, canny_image=canny_image,
+                inpainting_image=inpainting_image, mask_image=mask_image, inpainting_conditioning_scale=inpainting_conditioning_scale,
+                num_outputs=num_outputs, max_width=max_width, max_height=max_height,
+                scheduler=scheduler, num_inference_steps=num_inference_steps, guidance_scale=guidance_scale,
+                seed=seed, eta=eta,
                 negative_prompt=negative_prompt,
-                guess_mode=guess_mode, 
-                disable_safety_check=disable_safety_check,
+                guess_mode=guess_mode, disable_safety_check=disable_safety_check,
                 sorted_controlnets=sorted_controlnets,
-                ip_adapter_image=ip_adapter_image, 
-                ip_adapter_weight=ip_adapter_weight,
-                img2img=img2img_image, 
-                img2img_strength=img2img_strength, 
-                ip_ckpt=ip_adapter_ckpt,
+                ip_adapter_image=ip_adapter_image, ip_adapter_weight=ip_adapter_weight,
+                img2img=img2img_image, img2img_strength=img2img_strength, ip_ckpt=ip_adapter_ckpt,
                 text_for_auto_mask=positive_auto_mask_text.split(",") if positive_auto_mask_text else None,
                 negative_text_for_auto_mask=negative_auto_mask_text.split(",") if negative_auto_mask_text else None,
                 add_more_detail_lora_scale=add_more_detail_lora_scale, 
@@ -247,17 +266,15 @@ class Predictor(BasePredictor):
                 finetuned_model_url=finetuned_model_url,
             )
 
-            output_paths = []
-            for i, output in enumerate(outputs):
-                output_path = f"/tmp/output_{i}.png"
-                output.images[0].save(output_path)
-                output_paths.append(Path(output_path))
+        output_paths = []
+        for i, output in enumerate(outputs):
+            output_path = f"/tmp/output_{i}.png"
+            output.images[0].save(output_path)
+            output_paths.append(Path(output_path))
 
-            if len(output_paths) == 0:
-                raise Exception("No images were generated. This might be due to NSFW content detection.")
+        if len(output_paths) == 0:
+            raise Exception(
+                f"NSFW content detected. Try running it again, or try a different prompt."
+            )
 
-            return output_paths
-        
-        except Exception as e:
-            print(f"An error occurred during prediction: {str(e)}")
-            raise
+        return output_paths
