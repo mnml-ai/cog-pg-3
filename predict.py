@@ -128,6 +128,7 @@ class Predictor(BasePredictor):
     def setup(self):
         """Load the model into memory to make running multiple predictions efficient"""
         self.gen = Generator(
+            sd_path="runwayml/stable-diffusion-v1-5",  # or another valid model path
             load_controlnets={"lineart", "mlsd", "canny", "depth", "inpainting"},
             load_ip_adapter=True
         )
@@ -285,7 +286,7 @@ class Predictor(BasePredictor):
             self.gen.load_model(custom_model_path)
         else:
             self.gen.load_model(model_choice)
-            
+
         outputs= self.gen.predict(
                 prompt=prompt,
                 lineart_image=lineart_image, lineart_conditioning_scale=lineart_conditioning_scale,
